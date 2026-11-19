@@ -49,6 +49,16 @@ class HandTrackingSource final : public InputSource {
     // --- Added for grab‑and‑move scroll ---
     float mLastScrollY = 0.0f;
     bool mScrolling = false;
+
+    // --- Joint-based pinch detection (no XR_FB_hand_tracking_aim) ---
+    // 0 = none, 1 = index, 2 = middle, 3 = ring, 4 = little
+    uint8_t mJointPinchFinger {0};
+    XrHandTrackingAimFlagsFB mJointPinchStatus {0};
+    bool mWasTracked {false};
+    XrTime mIgnoreActionsUntil {};
+
+    // --- Twist-to-turn ---
+    std::optional<XrVector3f> mTwistReferenceLateral;
   };
 
   bool mHibernating {false};
@@ -58,6 +68,13 @@ class HandTrackingSource final : public InputSource {
   Hand mRightHand {XR_HAND_RIGHT_EXT};
 
   void InitHandTracker(Hand* hand);
+  static void UpdateJointPinch(
+    Hand* hand,
+    const XrHandJointLocationEXT* joints);
+  static std::optional<float> UpdateTwist(
+    Hand* hand,
+    const XrHandJointLocationEXT* joints,
+    bool pinching);
   void UpdateHand(const FrameInfo&, Hand* hand);
   static void UpdatePinchAndDragScrolling(Hand* hand, InputState& state);
   std::tuple<XrPosef, XrVector2f> RaycastPose(

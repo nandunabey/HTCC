@@ -40,6 +40,12 @@ struct InputState {
   std::optional<XrVector2f> mDirection;
 
   ActionState mActions {};
+
+  /* Wrist roll since the current primary pinch started, in radians.
+   * Positive is clockwise as seen by the user. Only set while pinching, and
+   * only by sources that can measure it (OpenXR hand tracking joints).
+   */
+  std::optional<float> mTwist;
 };
 
 }// namespace HandTrackedCockpitClicking

@@ -53,6 +53,21 @@ enum class HandTrackingHands : DWORD {
   Left = 1,
   Right = 2,
 };
+// Pinch detection from XR_EXT_hand_tracking joints, for runtimes without
+// XR_FB_hand_tracking_aim (e.g. VIVE Streaming via SteamVR)
+enum class JointPinchDetection : DWORD {
+  Auto = 0,// use joints only when XR_FB_hand_tracking_aim is unavailable
+  Always = 1,
+  Never = 2,
+};
+// What a middle/ring/little-finger pinch does when pinches come from joints.
+// (Index is always the primary action / grab.)
+enum class JointPinchFingerAction : DWORD {
+  None = 0,
+  Secondary = 1,// MSFS: push the knob/button ("right click")
+  ScrollDecrease = 2,
+  ScrollIncrease = 3,
+};
 
 }// namespace HandTrackedCockpitClicking
 
@@ -123,6 +138,26 @@ enum class HandTrackingHands : DWORD {
   IT(bool, HandTrackingWakeSleepBeeps, false) \
   IT(bool, HandTrackingHibernateBeeps, true) \
   IT(uint32_t, HandTrackingGestureMilliseconds, 50) \
+  IT( \
+    HandTrackedCockpitClicking::JointPinchDetection, \
+    JointPinchDetection, \
+    HandTrackedCockpitClicking::JointPinchDetection::Auto) \
+  IT(uint32_t, HandTrackingReacquireMilliseconds, 120) \
+  IT( \
+    HandTrackedCockpitClicking::JointPinchFingerAction, \
+    JointPinchMiddleAction, \
+    HandTrackedCockpitClicking::JointPinchFingerAction::None) \
+  IT( \
+    HandTrackedCockpitClicking::JointPinchFingerAction, \
+    JointPinchRingAction, \
+    HandTrackedCockpitClicking::JointPinchFingerAction::Secondary) \
+  IT( \
+    HandTrackedCockpitClicking::JointPinchFingerAction, \
+    JointPinchLittleAction, \
+    HandTrackedCockpitClicking::JointPinchFingerAction::None) \
+  IT(uint32_t, PinchLookbackMilliseconds, 150) \
+  IT(bool, TwistToTurn, true) \
+  IT(bool, TwistToTurnInvert, false) \
   IT(uint16_t, PointCtrlVID, 0x04d8) \
   IT(uint16_t, PointCtrlPID, 0xeeec) \
   IT(uint8_t, PointCtrlFCUButtonL1, 0) \
@@ -151,6 +186,11 @@ enum class HandTrackingHands : DWORD {
   IT(HandTrackingActionHFOV, std::numbers::pi_v<float> / 2) \
   IT(HandTrackingHibernateCutoff, std::numbers::pi_v<float> / 8) \
   IT(SmoothingFactor, 1.0f) \
+  IT(JointPinchPressDistance, 0.015f) \
+  IT(JointPinchReleaseDistance, 0.030f) \
+  IT(JointPinchFingerMargin, 0.008f) \
+  IT(TwistToTurnGain, 1.5f) \
+  IT(TwistToTurnDeadzone, 0.06f) \
   IT(GrabMoveScrollScale, 1.0f) \
   IT(LeftEyeFOVLeft, 0.0f) \
   IT(LeftEyeFOVRight, 0.0f) \

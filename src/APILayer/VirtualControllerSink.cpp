@@ -164,7 +164,38 @@ std::optional<XrPosef> VirtualControllerSink::GetInputPose(
   if (!(hand.mActions.Any() && controller->savedAimPose)) {
     controller->savedAimPose = inputPose;
     controller->mUnlockedPosition = false;
+    controller->mActionsWereActive = false;
+    auto& history = controller->mPoseHistory;
+    history.emplace_back(frameInfo.mNow, inputPose);
+    const auto keep = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::milliseconds(500))
+                        .count();
+    while (!history.empty() && history.front().first < frameInfo.mNow - keep) {
+      history.pop_front();
+    }
     return inputPose;
+  }
+
+  if (!controller->mActionsWereActive) {
+    // First frame of a pinch: lock to where the pointer was a little earlier,
+    // before the pinching fingers started dragging the hand.
+    controller->mActionsWereActive = true;
+    const auto lookback
+      = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::milliseconds(Config::PinchLookbackMilliseconds))
+          .count();
+    const auto& history = controller->mPoseHistory;
+    if (lookback > 0 && !history.empty()) {
+      const auto target = frameInfo.mNow - lookback;
+      auto chosen = history.front().second;
+      for (const auto& [t, pose]: history) {
+        if (t > target) {
+          break;
+        }
+        chosen = pose;
+      }
+      controller->savedAimPose = chosen;
+    }
   }
 
   if (WorldLockOrientation()) {
@@ -205,6 +236,7 @@ void VirtualControllerSink::UpdateHand(
 
   controller->aimPose = *aimPose;
   controller->present = true;
+  controller->mTwist = hand.mTwist;
 
   SetControllerActions(
     frameInfo.mPredictedDisplayTime, hand.mActions, controller);
@@ -372,6 +404,16 @@ void VirtualControllerSink::SetMSFSControllerActions(
       controller->mRotationAngle += radians;
     }
     controller->mLastRotationAt = predictedDisplayTime;
+  }
+
+  // Twist-to-turn: while the knob is grabbed (primary held), roll the virtual
+  // controller with the user's wrist. MSFS (Lock interaction mode) turns the
+  // grabbed knob with controller roll. Scroll-style rotation still wins if
+  // both are happening.
+  if (
+    rawPrimary && controller->mTwist
+    && controller->mRotationDirection == Rotation::None) {
+    controller->mRotationAngle = -Config::TwistToTurnGain * (*controller->mTwist);
   }
 
   if (

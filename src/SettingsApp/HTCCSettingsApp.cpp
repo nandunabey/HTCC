@@ -230,9 +230,15 @@ static void OpenXRGUI() {
     gOpenXRSettings.HaveHandTracking(),
     "The runtime supports hand tracking",
     "The runtime does not support hand tracking");
+  const bool jointPinch = gOpenXRSettings.HaveHandTracking()
+    && (HTCC::Config::JointPinchDetection == HTCC::JointPinchDetection::Always
+        || (HTCC::Config::JointPinchDetection == HTCC::JointPinchDetection::Auto
+            && !gOpenXRSettings.HaveHandTrackingAimFB()));
+  const bool havePinch = gOpenXRSettings.HaveHandTrackingAimFB() || jointPinch;
   StatusRow(
-    gOpenXRSettings.HaveHandTrackingAimFB(),
-    "The runtime supports pinch gestures",
+    havePinch,
+    jointPinch ? "Pinch gestures are detected from hand joints"
+               : "The runtime supports pinch gestures",
     "The runtime does not support pinch gestures");
 
   UltraleapGUI();
@@ -243,8 +249,7 @@ static void OpenXRGUI() {
   }
 
   {
-    const auto disabled
-      = BeginEnabled(gOpenXRSettings.HaveHandTrackingAimFB()).Scoped();
+    const auto disabled = BeginEnabled(havePinch).Scoped();
     if (ToggleSwitch(&HTCC::Config::PinchToClick).Caption("Pinch to click")) {
       HTCC::Config::SavePinchToClick();
     }
@@ -256,6 +261,11 @@ static void OpenXRGUI() {
     if (ToggleSwitch(&HTCC::Config::GrabMoveToScroll)
           .Caption("Grab and move to scroll")) {
       HTCC::Config::SaveGrabMoveToScroll();
+    }
+
+    if (ToggleSwitch(&HTCC::Config::TwistToTurn)
+          .Caption("Pinch and twist wrist to turn knobs")) {
+      HTCC::Config::SaveTwistToTurn();
     }
   }
 

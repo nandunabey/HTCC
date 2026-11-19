@@ -5,6 +5,7 @@
 #include <openxr/openxr.h>
 
 #include <unordered_map>
+#include <deque>
 #include <unordered_set>
 
 #include "Config.h"
@@ -132,6 +133,14 @@ class VirtualControllerSink final {
     XrTime mLastRotationAt {};
 
     XrTime mBlockSecondaryActionsUntil {};
+
+    // Pointer pose history, so a pinch can lock the pointer where it was
+    // *before* the pinching motion started moving the hand.
+    std::deque<std::pair<XrTime, XrPosef>> mPoseHistory;
+    bool mActionsWereActive {false};
+
+    // Twist-to-turn (wrist roll since pinch start), from InputState::mTwist
+    std::optional<float> mTwist;
   };
 
   std::optional<XrPosef> GetInputPose(

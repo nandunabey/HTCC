@@ -4,7 +4,9 @@
 
 #include <directxtk/SimpleMath.h>
 
+#include <algorithm>
 #include <array>
+#include <limits>
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -90,6 +92,171 @@ static void PopulateInteractions(
     hand->mValueChange = ActionState::ValueChange::Increase;
     return;
   }
+}
+
+static bool UseJointPinch() {
+  switch (Config::JointPinchDetection) {
+    case JointPinchDetection::Always:
+      return true;
+    case JointPinchDetection::Never:
+      return false;
+    case JointPinchDetection::Auto:
+    default:
+      return !Environment::Have_XR_FB_hand_tracking_aim;
+  }
+}
+
+static bool JointPositionValid(const XrHandJointLocationEXT& joint) {
+  return HasFlags(joint.locationFlags, XR_SPACE_LOCATION_POSITION_VALID_BIT);
+}
+
+static Vector3 JointPosition(const XrHandJointLocationEXT& joint) {
+  return {joint.pose.position.x, joint.pose.position.y, joint.pose.position.z};
+}
+
+// Pinch detection from joint positions, for runtimes that don't provide
+// XR_FB_hand_tracking_aim. Produces the same flags so the rest of HTCC is
+// unchanged.
+//
+// - hysteresis: press below JointPinchPressDistance, release above
+//   JointPinchReleaseDistance
+// - the pinching finger must be clearly the closest one to the thumb
+//   (JointPinchFingerMargin); this stops a middle-finger pinch from also being
+//   detected as an index pinch.
+void HandTrackingSource::UpdateJointPinch(
+  Hand* hand,
+  const XrHandJointLocationEXT* joints) {
+  constexpr std::array<XrHandJointEXT, 4> tips {
+    XR_HAND_JOINT_INDEX_TIP_EXT,
+    XR_HAND_JOINT_MIDDLE_TIP_EXT,
+    XR_HAND_JOINT_RING_TIP_EXT,
+    XR_HAND_JOINT_LITTLE_TIP_EXT,
+  };
+
+  const auto& thumb = joints[XR_HAND_JOINT_THUMB_TIP_EXT];
+  if (!JointPositionValid(thumb)) {
+    hand->mJointPinchFinger = 0;
+    hand->mJointPinchStatus = 0;
+    return;
+  }
+  const auto thumbPos = JointPosition(thumb);
+
+  std::array<float, 4> distances {};
+  for (size_t i = 0; i < tips.size(); ++i) {
+    const auto& tip = joints[tips[i]];
+    distances[i] = JointPositionValid(tip)
+      ? Vector3::Distance(thumbPos, JointPosition(tip))
+      : std::numeric_limits<float>::infinity();
+  }
+
+  // Release
+  if (hand->mJointPinchFinger) {
+    const auto i = hand->mJointPinchFinger - 1;
+    if (distances[i] > Config::JointPinchReleaseDistance) {
+      hand->mJointPinchFinger = 0;
+    }
+  }
+
+  // Press
+  if (!hand->mJointPinchFinger) {
+    size_t best = 0;
+    for (size_t i = 1; i < distances.size(); ++i) {
+      if (distances[i] < distances[best]) {
+        best = i;
+      }
+    }
+    auto secondBest = std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < distances.size(); ++i) {
+      if (i != best) {
+        secondBest = std::min(secondBest, distances[i]);
+      }
+    }
+    if (
+      distances[best] < Config::JointPinchPressDistance
+      && (secondBest - distances[best]) >= Config::JointPinchFingerMargin) {
+      hand->mJointPinchFinger = static_cast<uint8_t>(best + 1);
+    }
+  }
+
+  // Index = primary. Other fingers are remappable: VIVE's hand tracking
+  // often reports a middle-finger pinch as an index pinch, so by default the
+  // middle finger does nothing and the ring finger is the secondary action.
+  const auto actionFlag = [](JointPinchFingerAction action) -> XrHandTrackingAimFlagsFB {
+    switch (action) {
+      case JointPinchFingerAction::Secondary:
+        return XR_HAND_TRACKING_AIM_MIDDLE_PINCHING_BIT_FB;
+      case JointPinchFingerAction::ScrollDecrease:
+        return XR_HAND_TRACKING_AIM_RING_PINCHING_BIT_FB;
+      case JointPinchFingerAction::ScrollIncrease:
+        return XR_HAND_TRACKING_AIM_LITTLE_PINCHING_BIT_FB;
+      case JointPinchFingerAction::None:
+      default:
+        return 0;
+    }
+  };
+  switch (hand->mJointPinchFinger) {
+    case 1:
+      hand->mJointPinchStatus = XR_HAND_TRACKING_AIM_INDEX_PINCHING_BIT_FB;
+      break;
+    case 2:
+      hand->mJointPinchStatus = actionFlag(Config::JointPinchMiddleAction);
+      break;
+    case 3:
+      hand->mJointPinchStatus = actionFlag(Config::JointPinchRingAction);
+      break;
+    case 4:
+      hand->mJointPinchStatus = actionFlag(Config::JointPinchLittleAction);
+      break;
+    default:
+      hand->mJointPinchStatus = 0;
+  }
+}
+
+// Wrist roll since the pinch started, around the hand's forward axis.
+// Positive = clockwise from the user's point of view (right-hand rule around
+// an axis pointing away from the user).
+std::optional<float> HandTrackingSource::UpdateTwist(
+  Hand* hand,
+  const XrHandJointLocationEXT* joints,
+  bool pinching) {
+  if (!(pinching && Config::TwistToTurn)) {
+    hand->mTwistReferenceLateral = {};
+    return {};
+  }
+  const auto& wrist = joints[XR_HAND_JOINT_WRIST_EXT];
+  const auto& middle = joints[XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT];
+  const auto& index = joints[XR_HAND_JOINT_INDEX_PROXIMAL_EXT];
+  const auto& little = joints[XR_HAND_JOINT_LITTLE_PROXIMAL_EXT];
+  if (!(JointPositionValid(wrist) && JointPositionValid(middle)
+        && JointPositionValid(index) && JointPositionValid(little))) {
+    return {};
+  }
+
+  auto axis = JointPosition(middle) - JointPosition(wrist);
+  if (axis.LengthSquared() < 1e-6f) {
+    return {};
+  }
+  axis.Normalize();
+
+  // knuckle line, projected onto the plane perpendicular to the forward axis
+  const auto project = [&axis](Vector3 v) {
+    v -= axis * v.Dot(axis);
+    if (v.LengthSquared() > 1e-8f) {
+      v.Normalize();
+    }
+    return v;
+  };
+  const auto lateral = project(JointPosition(index) - JointPosition(little));
+
+  if (!hand->mTwistReferenceLateral) {
+    hand->mTwistReferenceLateral = {lateral.x, lateral.y, lateral.z};
+    return 0.0f;
+  }
+  const auto& r = *hand->mTwistReferenceLateral;
+  const auto ref = project({r.x, r.y, r.z});
+  const auto angle
+    = std::atan2(axis.Dot(ref.Cross(lateral)), ref.Dot(lateral));
+  return Config::TwistToTurnInvert ? -angle : angle;
 }
 
 static bool UseHandTrackingAimPointFB() {
@@ -218,6 +385,26 @@ void HandTrackingSource::UpdateHand(const FrameInfo& frameInfo, Hand* hand) {
     return;
   }
 
+  if (joints.isActive) {
+    if (!hand->mWasTracked) {
+      // Tracking just (re)acquired the hand: the first frames are often wrong
+      // (jumps, swapped fingers), so ignore gestures briefly.
+      hand->mIgnoreActionsUntil = frameInfo.mNow
+        + std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::milliseconds(Config::HandTrackingReacquireMilliseconds))
+            .count();
+      hand->mJointPinchFinger = 0;
+    }
+    hand->mWasTracked = true;
+    if (UseJointPinch()) {
+      UpdateJointPinch(hand, jointLocations.data());
+    }
+  } else {
+    hand->mWasTracked = false;
+    hand->mJointPinchFinger = 0;
+    hand->mJointPinchStatus = 0;
+  }
+
   if (
     UseHandTrackingAimPointFB()
     && HasFlags(aimFB.status, XR_HAND_TRACKING_AIM_VALID_BIT_FB)) {
@@ -291,7 +478,12 @@ void HandTrackingSource::UpdateHand(const FrameInfo& frameInfo, Hand* hand) {
 
   {
     ActionState rawActions {};
-    PopulateInteractions(aimFB.status, &rawActions);
+    XrHandTrackingAimFlagsFB status
+      = UseJointPinch() ? hand->mJointPinchStatus : aimFB.status;
+    if (frameInfo.mNow < hand->mIgnoreActionsUntil) {
+      status = 0;
+    }
+    PopulateInteractions(status, &rawActions);
     if (rawActions != hand->mRawActions) {
       hand->mRawActionsSince = frameInfo.mNow;
       hand->mRawActions = rawActions;
@@ -380,6 +572,15 @@ void HandTrackingSource::UpdateHand(const FrameInfo& frameInfo, Hand* hand) {
       // reproject from direction
       state.mPose = {};
       break;
+  }
+
+  state.mTwist
+    = UpdateTwist(hand, jointLocations.data(), state.mActions.mPrimary);
+  if (state.mTwist) {
+    // deadzone without a jump at its edge
+    const auto a = *state.mTwist;
+    const auto dz = Config::TwistToTurnDeadzone;
+    state.mTwist = (std::abs(a) <= dz) ? 0.0f : std::copysign(std::abs(a) - dz, a);
   }
 
   if (Config::GrabMoveToScroll) {
